@@ -2,8 +2,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 from PIL import Image
-import tensorflow as tf
-from tensorflow.keras import layers, models, regularizers
 import os
 
 # ── Konfigurasi Halaman ───────────────────────────────────────────────────
@@ -14,7 +12,7 @@ st.set_page_config(
 )
 
 # ── Konstanta ─────────────────────────────────────────────────────────────
-MODEL_PATH = "best_model_alzheimer.h5"
+MODEL_PATH = "model.tflite"
 TARGET_SIZE = (224, 224)
 
 # Metrik dari hasil evaluasi test set
@@ -28,45 +26,16 @@ METRICS = {
 }
 
 
-# ── Rebuild arsitektur + load weights (hindari error versi) ───────────────
-def build_cnn_model(input_shape=(224, 224, 1)):
-    model = models.Sequential(name="CNN_Alzheimer")
-    model.add(layers.Conv2D(32, (3, 3), activation="relu",
-                            padding="same", input_shape=input_shape, name="Conv2D_1"))
-    model.add(layers.BatchNormalization(name="BatchNorm_1"))
-    model.add(layers.MaxPooling2D((2, 2), name="MaxPool_1"))
-    model.add(layers.SpatialDropout2D(0.1, name="SpDrop_1"))
-    model.add(layers.Conv2D(64, (3, 3), activation="relu",
-                            padding="same", name="Conv2D_2"))
-    model.add(layers.BatchNormalization(name="BatchNorm_2"))
-    model.add(layers.MaxPooling2D((2, 2), name="MaxPool_2"))
-    model.add(layers.SpatialDropout2D(0.1, name="SpDrop_2"))
-    model.add(layers.Conv2D(128, (3, 3), activation="relu",
-                            padding="same", name="Conv2D_3"))
-    model.add(layers.BatchNormalization(name="BatchNorm_3"))
-    model.add(layers.MaxPooling2D((2, 2), name="MaxPool_3"))
-    model.add(layers.SpatialDropout2D(0.2, name="SpDrop_3"))
-    model.add(layers.Conv2D(256, (3, 3), activation="relu",
-                            padding="same", name="Conv2D_4"))
-    model.add(layers.BatchNormalization(name="BatchNorm_4"))
-    model.add(layers.MaxPooling2D((2, 2), name="MaxPool_4"))
-    model.add(layers.SpatialDropout2D(0.2, name="SpDrop_4"))
-    model.add(layers.GlobalAveragePooling2D(name="GAP"))
-    model.add(layers.Dense(256, activation="relu",
-                           kernel_regularizer=regularizers.l2(1e-4), name="Dense_1"))
-    model.add(layers.Dropout(0.5, name="Dropout_1"))
-    model.add(layers.Dense(128, activation="relu",
-                           kernel_regularizer=regularizers.l2(1e-4), name="Dense_2"))
-    model.add(layers.Dropout(0.4, name="Dropout_2"))
-    model.add(layers.Dense(1, activation="sigmoid", name="Output"))
-    return model
-
-
+# ── Load TFLite Model (cached) ───────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    model = build_cnn_model()
-    model.load_weights(MODEL_PATH)
-    return model
+    try:
+        import tflite_runtime.interpreter as tflite
+    except ImportError:
+        import tensorflow.lite as tflite
+    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+    return interpreter
 
 
 # ── Preprocessing Citra ──────────────────────────────────────────────────
@@ -75,6 +44,16 @@ def preprocess_image(uploaded_file):
     img = img.resize(TARGET_SIZE, Image.BILINEAR)
     arr = np.array(img, dtype=np.float32) / 255.0
     return arr[np.newaxis, :, :, np.newaxis]  # (1, 224, 224, 1)
+
+
+# ── Prediksi dengan TFLite ───────────────────────────────────────────────
+def predict(interpreter, img_array):
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    interpreter.set_tensor(input_details[0]["index"], img_array)
+    interpreter.invoke()
+    prob_ad = float(interpreter.get_tensor(output_details[0]["index"])[0][0])
+    return prob_ad
 
 
 # ── Sidebar Navigasi ─────────────────────────────────────────────────────
@@ -121,9 +100,9 @@ if page == "Prediksi Diagnosis":
             st.subheader("Hasil Prediksi")
 
             with st.spinner("Memproses citra..."):
-                model = load_model()
+                interpreter = load_model()
                 img_array = preprocess_image(uploaded)
-                prob_ad = float(model.predict(img_array, verbose=0)[0][0])
+                prob_ad = predict(interpreter, img_array)
                 prob_cn = 1.0 - prob_ad
                 is_ad = prob_ad >= 0.5
 
