@@ -2,6 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 from PIL import Image
+import onnxruntime as ort
 import os
 
 # ── Konfigurasi Halaman ───────────────────────────────────────────────────
@@ -12,7 +13,7 @@ st.set_page_config(
 )
 
 # ── Konstanta ─────────────────────────────────────────────────────────────
-MODEL_PATH = "model.tflite"
+MODEL_PATH = "model.onnx"
 TARGET_SIZE = (224, 224)
 
 # Metrik dari hasil evaluasi test set
@@ -26,16 +27,10 @@ METRICS = {
 }
 
 
-# ── Load TFLite Model (cached) ───────────────────────────────────────────
+# ── Load ONNX Model (cached) ─────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    try:
-        import tflite_runtime.interpreter as tflite
-    except ImportError:
-        import tensorflow.lite as tflite
-    interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-    interpreter.allocate_tensors()
-    return interpreter
+    return ort.InferenceSession(MODEL_PATH)
 
 
 # ── Preprocessing Citra ──────────────────────────────────────────────────
@@ -46,13 +41,11 @@ def preprocess_image(uploaded_file):
     return arr[np.newaxis, :, :, np.newaxis]  # (1, 224, 224, 1)
 
 
-# ── Prediksi dengan TFLite ───────────────────────────────────────────────
-def predict(interpreter, img_array):
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-    interpreter.set_tensor(input_details[0]["index"], img_array)
-    interpreter.invoke()
-    prob_ad = float(interpreter.get_tensor(output_details[0]["index"])[0][0])
+# ── Prediksi dengan ONNX ─────────────────────────────────────────────────
+def predict(session, img_array):
+    input_name = session.get_inputs()[0].name
+    result = session.run(None, {input_name: img_array})
+    prob_ad = float(result[0][0][0])
     return prob_ad
 
 
@@ -100,9 +93,9 @@ if page == "Prediksi Diagnosis":
             st.subheader("Hasil Prediksi")
 
             with st.spinner("Memproses citra..."):
-                interpreter = load_model()
+                session = load_model()
                 img_array = preprocess_image(uploaded)
-                prob_ad = predict(interpreter, img_array)
+                prob_ad = predict(session, img_array)
                 prob_cn = 1.0 - prob_ad
                 is_ad = prob_ad >= 0.5
 
